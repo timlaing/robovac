@@ -90,25 +90,32 @@ def get_eufy_vacuums(self):
 
     device_response = response.json()
 
-    items = device_response["items"]
+    items = device_response.get("items", [])
     for item in items:
+        # Ensure "device", "product", and "wifi" are not None before accessing their attributes
+        device = item.get("device")
         if (
-            item["device"]["product"]["appliance"] == "Cleaning"
-            and item["device"]["id"] in allvacs
+            device 
+            and device.get("product") 
+            and device["product"].get("appliance") == "Cleaning"
+            and device.get("id") 
+            and device.get("wifi") 
+            and device["id"] in allvacs
         ):
             vac_details = {
-                CONF_ID: item["device"]["id"],
-                CONF_MODEL: item["device"]["product"]["product_code"],
-                CONF_NAME: item["device"]["alias_name"],
-                CONF_DESCRIPTION: item["device"]["name"],
-                CONF_MAC: item["device"]["wifi"]["mac"],
+                CONF_ID: device["id"],
+                CONF_MODEL: device["product"].get("product_code", "Unknown"),  # Use get with a default value
+                CONF_NAME: device.get("alias_name", "Unknown"),  # Use get with a default value
+                CONF_DESCRIPTION: device.get("name", "Unknown"),  # Use get with a default value
+                CONF_MAC: device["wifi"].get("mac", "Unknown"),  # Use get with a default value
                 CONF_IP_ADDRESS: "",
             }
-            allvacs[item["device"]["id"]].update(vac_details)
+            allvacs[device["id"]].update(vac_details)
 
     self[CONF_VACS] = allvacs
 
     return response
+
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
