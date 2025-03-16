@@ -16,37 +16,33 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
 from copy import deepcopy
+from typing import Any, Optional
 
-import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
-
+import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import callback
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_ACCESS_TOKEN,
+    CONF_CLIENT_ID,
+    CONF_DESCRIPTION,
+    CONF_ID,
+    CONF_IP_ADDRESS,
+    CONF_LOCATION,
+    CONF_MAC,
+    CONF_MODEL,
+    CONF_NAME,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import selector
 
-from homeassistant.const import (
-    CONF_ACCESS_TOKEN,
-    CONF_NAME,
-    CONF_ID,
-    CONF_MODEL,
-    CONF_USERNAME,
-    CONF_PASSWORD,
-    CONF_IP_ADDRESS,
-    CONF_DESCRIPTION,
-    CONF_MAC,
-    CONF_LOCATION,
-    CONF_CLIENT_ID,
-)
-
-from .const import DOMAIN, CONF_VACS, CONF_PHONE_CODE
-
-from .tuyawebapi import TuyaAPISession
+from .const import CONF_PHONE_CODE, CONF_VACS, DOMAIN
 from .eufywebapi import EufyLogon
+from .tuyawebapi import TuyaAPISession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +66,22 @@ def get_eufy_vacuums(self):
     if user_response["res_code"] != 1:
         raise InvalidAuth
 
+    self[CONF_CLIENT_ID] = user_response["user_info"]["id"]
+    self[CONF_PHONE_CODE] = user_response["user_info"]["phone_code"]
+
+    tuya_client = TuyaAPISession(
+        username="eh-" + self[CONF_CLIENT_ID], country_code=self[CONF_PHONE_CODE]
+    )
+    allvacs = {}
+    for home in tuya_client.list_homes():
+        for device in tuya_client.list_devices(home["groupId"]):
+            vac_details = {
+                CONF_ACCESS_TOKEN: device["localKey"],
+                CONF_LOCATION: home["groupId"],
+            }
+
+            allvacs[device["devId"]] = vac_details
+
     response = eufy_session.get_device_info(
         user_response["user_info"]["request_host"],
         user_response["user_info"]["id"],
@@ -77,34 +89,33 @@ def get_eufy_vacuums(self):
     )
 
     device_response = response.json()
-    self[CONF_CLIENT_ID] = user_response["user_info"]["id"]
-    self[CONF_PHONE_CODE] = user_response["user_info"]["phone_code"]
 
-    # self[CONF_VACS] = {}
-    items = device_response["items"]
-    allvacs = {}
+    items = device_response.get("items", [])
     for item in items:
-        if item["device"]["product"]["appliance"] == "Cleaning":
+        # Ensure "device", "product", and "wifi" are not None before accessing their attributes
+        device = item.get("device")
+        if (
+            device 
+            and device.get("product") 
+            and device["product"].get("appliance") == "Cleaning"
+            and device.get("id") 
+            and device.get("wifi") 
+            and device["id"] in allvacs
+        ):
             vac_details = {
-                CONF_ID: item["device"]["id"],
-                CONF_MODEL: item["device"]["product"]["product_code"],
-                CONF_NAME: item["device"]["alias_name"],
-                CONF_DESCRIPTION: item["device"]["name"],
-                CONF_MAC: item["device"]["wifi"]["mac"],
+                CONF_ID: device["id"],
+                CONF_MODEL: device["product"].get("product_code", "Unknown"),  # Use get with a default value
+                CONF_NAME: device.get("alias_name", "Unknown"),  # Use get with a default value
+                CONF_DESCRIPTION: device.get("name", "Unknown"),  # Use get with a default value
+                CONF_MAC: device["wifi"].get("mac", "Unknown"),  # Use get with a default value
                 CONF_IP_ADDRESS: "",
             }
-            allvacs[item["device"]["id"]] = vac_details
+            allvacs[device["id"]].update(vac_details)
+
     self[CONF_VACS] = allvacs
 
-    tuya_client = TuyaAPISession(
-        username="eh-" + self[CONF_CLIENT_ID], country_code=self[CONF_PHONE_CODE]
-    )
-    for home in tuya_client.list_homes():
-        for device in tuya_client.list_devices(home["groupId"]):
-            self[CONF_VACS][device["devId"]][CONF_ACCESS_TOKEN] = device["localKey"]
-            self[CONF_VACS][device["devId"]][CONF_LOCATION] = home["groupId"]
-
     return response
+
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
@@ -138,7 +149,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         else:
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
-            # return await self.async_step_repo(valid_data)
+
             return self.async_create_entry(title=unique_id, data=valid_data)
         return self.async_show_form(
             step_id="user", data_schema=USER_SCHEMA, errors=errors
@@ -183,7 +194,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     item_settings[CONF_IP_ADDRESS] = user_input[CONF_IP_ADDRESS]
             updated_repos = deepcopy(self.config_entry.data[CONF_VACS])
 
-            # print("Updated", updated_repos)
             if not errors:
                 # Value of data will be set on the options property of our config_entry
                 # instance.
